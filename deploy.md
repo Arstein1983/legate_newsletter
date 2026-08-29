@@ -26,7 +26,11 @@
 
 ---
 
+
+
 ## 1. Подключение к серверу
+
+
 
 ### Windows (PowerShell, VPN включён)
 
@@ -42,14 +46,18 @@ ssh-keygen -R 77.110.106.118
 ssh root@77.110.106.118
 ```
 
-| Параметр | Значение |
-|----------|----------|
-| Логин | `root` |
-| Пароль | из панели Aeza |
+
+| Параметр | Значение       |
+| -------- | -------------- |
+| Логин    | `root`         |
+| Пароль   | из панели Aeza |
+
 
 Если SSH не работает — откройте **Console / VNC** в браузере (панель Aeza).
 
 ---
+
+
 
 ## 2. Подготовка серера
 
@@ -64,16 +72,24 @@ mkdir -p /opt/newsletter_bot
 
 > **Примечание:** если пакет `docker-compose-plugin` не находится — используйте `docker-compose` (с дефисом), как выше.
 
+
+
 ### Диалоги при apt upgrade
 
-| Окно | Что выбрать |
-|------|-------------|
-| Keyboard layout | **English (US)** → Ok |
+
+| Окно                         | Что выбрать                                         |
+| ---------------------------- | --------------------------------------------------- |
+| Keyboard layout              | **English (US)** → Ok                               |
 | openssh-server / sshd_config | **keep the local version currently installed** → Ok |
+
 
 ---
 
+
+
 ## 3. Загрузка проекта
+
+
 
 ### С ПК (PowerShell, VPN)
 
@@ -89,6 +105,8 @@ scp .env root@77.110.106.118:/opt/newsletter_bot/
 ```
 
 ---
+
+
 
 ## 4. Настройка .env
 
@@ -115,15 +133,19 @@ TELEGRAM_API_HASH=...
 SEND_DELAY_SECONDS=4
 ```
 
-| Переменная | Описание |
-|------------|----------|
-| `BOT_TOKEN` | Токен от [@BotFather](https://t.me/BotFather) |
-| `ADMIN_IDS` | Telegram user id через запятую |
+
+| Переменная                              | Описание                                               |
+| --------------------------------------- | ------------------------------------------------------ |
+| `BOT_TOKEN`                             | Токен от [@BotFather](https://t.me/BotFather)          |
+| `ADMIN_IDS`                             | Telegram user id через запятую                         |
 | `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` | С [my.telegram.org/apps](https://my.telegram.org/apps) |
+
 
 Пароль MySQL должен совпадать в `.env` и в `docker-compose.yml` (если меняете).
 
 ---
+
+
 
 ## 5. Запуск MySQL
 
@@ -143,6 +165,8 @@ docker logs newsletter_mysql
 
 ---
 
+
+
 ## 6. Python и зависимости
 
 ```bash
@@ -153,6 +177,8 @@ pip install -r requirements.txt
 ```
 
 ---
+
+
 
 ## 7. Авторизация Telethon
 
@@ -204,6 +230,8 @@ chmod 600 /opt/newsletter_bot/sessions/admin.session
 
 ---
 
+
+
 ## 8. Проверочный запуск
 
 ```bash
@@ -219,6 +247,8 @@ python main.py
 > **Важно:** не запускайте бота одновременно на ПК и на сервере.
 
 ---
+
+
 
 ## 9. Автозапуск (systemd)
 
@@ -264,6 +294,8 @@ journalctl -u newsletter-bot -f
 
 ---
 
+
+
 ## 10. Первый вход в боте
 
 1. `/start` или кнопка **▶️ Старт**
@@ -274,7 +306,11 @@ journalctl -u newsletter-bot -f
 
 ---
 
+
+
 ## 11. Обновление и перезапуск
+
+
 
 ### Если бот работает через systemd (основной режим)
 
@@ -284,23 +320,31 @@ journalctl -u newsletter-bot -f
 systemctl restart newsletter-bot
 ```
 
-| Команда | Действие |
-|---------|----------|
-| `systemctl restart newsletter-bot` | Перезапуск |
-| `systemctl stop newsletter-bot` | Остановить |
-| `systemctl start newsletter-bot` | Запустить |
-| `systemctl status newsletter-bot` | Статус |
-| `journalctl -u newsletter-bot -f` | Логи в реальном времени |
+
+| Команда                            | Действие                |
+| ---------------------------------- | ----------------------- |
+| `systemctl restart newsletter-bot` | Перезапуск              |
+| `systemctl stop newsletter-bot`    | Остановить              |
+| `systemctl start newsletter-bot`   | Запустить               |
+| `systemctl status newsletter-bot`  | Статус                  |
+| `journalctl -u newsletter-bot -f`  | Логи в реальном времени |
+
+
+
 
 ### Что менялось — что делать
 
-| Изменили | Действие |
-|----------|----------|
-| Код (`app/`, `main.py`) | Залить файлы → `systemctl restart newsletter-bot` |
-| `.env` | Отредактировать → `systemctl restart newsletter-bot` |
-| `requirements.txt` | `pip install -r requirements.txt` → restart |
-| `docker-compose.yml` / MySQL | `docker-compose up -d` → restart бота |
-| `sessions/admin.session` | Restart бота |
+
+| Изменили                     | Действие                                             |
+| ---------------------------- | ---------------------------------------------------- |
+| Код (`app/`, `main.py`)      | Залить файлы → `systemctl restart newsletter-bot`    |
+| `.env`                       | Отредактировать → `systemctl restart newsletter-bot` |
+| `requirements.txt`           | `pip install -r requirements.txt` → restart          |
+| `docker-compose.yml` / MySQL | `docker-compose up -d` → restart бота                |
+| `sessions/admin.session`     | Restart бота                                         |
+
+
+
 
 ### Залить изменения с ПК
 
@@ -319,6 +363,8 @@ systemctl restart newsletter-bot
 journalctl -u newsletter-bot -f
 ```
 
+
+
 ### Если бот запущен вручную (без systemd)
 
 1. **Ctrl+C** в терминале с ботом
@@ -332,38 +378,48 @@ python main.py
 
 ---
 
+
+
 ## 12. Частые ошибки
 
-| Ошибка | Решение |
-|--------|---------|
-| `Connection refused` (SSH) | Подключаться **с VPN** |
-| `Host key verification failed` | `ssh-keygen -R 77.110.106.118` |
-| `kex_exchange_identification: Connection closed` | Консоль Aeza → `systemctl restart ssh` |
-| `Unable to locate package docker-compose-plugin` | `apt install docker.io docker-compose` |
-| `Unauthorized` (бот) | Проверить `BOT_TOKEN` в `.env` |
-| Нет доступа к боту | Проверить `ADMIN_IDS` |
-| MySQL не стартует | `docker logs newsletter_mysql` |
-| Бот не отвечает | `journalctl -u newsletter-bot -f` |
-| Два экземпляра бота | Остановить бота на ПК, оставить только сервер |
+
+| Ошибка                                           | Решение                                       |
+| ------------------------------------------------ | --------------------------------------------- |
+| `Connection refused` (SSH)                       | Подключаться **с VPN**                        |
+| `Host key verification failed`                   | `ssh-keygen -R 77.110.106.118`                |
+| `kex_exchange_identification: Connection closed` | Консоль Aeza → `systemctl restart ssh`        |
+| `Unable to locate package docker-compose-plugin` | `apt install docker.io docker-compose`        |
+| `Unauthorized` (бот)                             | Проверить `BOT_TOKEN` в `.env`                |
+| Нет доступа к боту                               | Проверить `ADMIN_IDS`                         |
+| MySQL не стартует                                | `docker logs newsletter_mysql`                |
+| Бот не отвечает                                  | `journalctl -u newsletter-bot -f`             |
+| Два экземпляра бота                              | Остановить бота на ПК, оставить только сервер |
+
 
 ---
+
+
 
 ## 13. Чеклист
 
-| # | Шаг | Готово |
-|---|-----|--------|
-| 1 | SSH с VPN работает | ☐ |
-| 2 | `apt update`, Docker, Python установлены | ☐ |
-| 3 | Проект в `/opt/newsletter_bot` | ☐ |
-| 4 | `.env` заполнен | ☐ |
-| 5 | `docker-compose up -d` | ☐ |
-| 6 | `pip install -r requirements.txt` | ☐ |
-| 7 | `sessions/admin.session` есть | ☐ |
-| 8 | `systemctl enable newsletter-bot` | ☐ |
-| 9 | Бот отвечает в Telegram | ☐ |
-| 10 | Бот на ПК остановлен | ☐ |
+
+| #   | Шаг                                      | Готово |
+| --- | ---------------------------------------- | ------ |
+| 1   | SSH с VPN работает                       | ☐      |
+| 2   | `apt update`, Docker, Python установлены | ☐      |
+| 3   | Проект в `/opt/newsletter_bot`           | ☐      |
+| 4   | `.env` заполнен                          | ☐      |
+| 5   | `docker-compose up -d`                   | ☐      |
+| 6   | `pip install -r requirements.txt`        | ☐      |
+| 7   | `sessions/admin.session` есть            | ☐      |
+| 8   | `systemctl enable newsletter-bot`        | ☐      |
+| 9   | Бот отвечает в Telegram                  | ☐      |
+| 10  | Бот на ПК остановлен                     | ☐      |
+
 
 ---
+
+
 
 ## Быстрая шпаргалка
 
@@ -380,4 +436,4 @@ journalctl -u newsletter-bot -f
 
 ---
 
-*Файл создан для проекта `newsletter_bot`. Обновляйте IP и пути при смене сервера.*
+*Файл создан для проекта* `newsletter_bot`*. Обновляйте IP и пути при смене сервера.*
