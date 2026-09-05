@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from aiogram import Bot
+from telethon import TelegramClient
 from telethon.errors import (
     FloodWaitError,
     InputUserDeactivatedError,
@@ -21,32 +22,46 @@ from telethon.tl.types import InputPhoneContact
 
 from app.db import repo
 from app.db.session import SessionLocal
-from app.sender.client import admin_client
+from app.sender.client import AdminClient, admin_clients
 from app.utils import recipient_label
 
 logger = logging.getLogger(__name__)
 
-_campaign_task: Optional[asyncio.Task] = None
-_cancel_event = asyncio.Event()
+_campaign_tasks: dict[int, asyncio.Task] = {}
+_cancel_events: dict[int, asyncio.Event] = {}
 _lock = asyncio.Lock()
 
 
-def is_campaign_running() -> bool:
-    return _campaign_task is not None and not _campaign_task.done()
+def is_campaign_running(admin_id: Optional[int] = None) -> bool:
+    if admin_id is None:
+        return any(task is not None and not task.done() for task in _campaign_tasks.values())
+    task = _campaign_tasks.get(admin_id)
+    return task is not None and not task.done()
 
 
-def request_cancel() -> bool:
-    if not is_campaign_running():
+def request_cancel(admin_id: int) -> bool:
+    if not is_campaign_running(admin_id):
         return False
-    _cancel_event.set()
+    event = _cancel_events.get(admin_id)
+    if event is None:
+        return False
+    event.set()
     return True
 
 
-async def start_campaign(bot: Bot, admin_chat_id: int, group_id: int, template_id: int) -> str:
+async def start_campaign(
+    bot: Bot,
+    admin_user_id: int,
+    admin_chat_id: int,
+    group_id: int,
+    template_id: int,
+) -> str:
     async with _lock:
-        if is_campaign_running():
+        if is_campaign_running(admin_user_id):
             return "already_running"
-        if not await admin_client.is_authorized():
+
+        admin = admin_clients.get(admin_user_id)
+        if not await admin.is_authorized():
             return "not_authorized"
 
         async with SessionLocal() as session:
@@ -62,18 +77,16 @@ async def start_campaign(bot: Bot, admin_chat_id: int, group_id: int, template_i
             delay_raw = await repo.get_setting(session, "send_delay_seconds", "4")
 
         delay = max(1.0, float(delay_raw))
-        _cancel_event.clear()
-        global _campaign_task
-        _campaign_task = asyncio.create_task(
-            _run_campaign(bot, admin_chat_id, campaign_id, delay),
-            name=f"campaign-{campaign_id}",
+        cancel_event = asyncio.Event()
+        _cancel_events[admin_user_id] = cancel_event
+        _campaign_tasks[admin_user_id] = asyncio.create_task(
+            _run_campaign(bot, admin, admin_chat_id, admin_user_id, campaign_id, delay, cancel_event),
+            name=f"campaign-{campaign_id}-admin-{admin_user_id}",
         )
         return f"started:{campaign_id}"
 
 
-async def _resolve_entity(recipient) -> object:
-    client = admin_client.client
-    assert client is not None
+async def _resolve_entity(client: TelegramClient, recipient) -> object:
     if recipient.username:
         return await client.get_entity(recipient.username)
     if recipient.phone:
@@ -92,13 +105,13 @@ async def _resolve_entity(recipient) -> object:
         )
         if result.users:
             return result.users[0]
-        raise RuntimeError("Не удалось найти пользователя по номеру. Добавьте контакт вручную или используйте @username.")
+        raise RuntimeError(
+            "Не удалось найти пользователя по номеру. Добавьте контакт вручную или используйте @username."
+        )
     raise RuntimeError("У получателя нет username и телефона")
 
 
-async def _send_to_entity(entity, template) -> None:
-    client = admin_client.client
-    assert client is not None
+async def _send_to_entity(client: TelegramClient, entity, template) -> None:
     text = template.text or ""
     media_path = template.media_path
     if media_path and Path(media_path).exists():
@@ -129,10 +142,20 @@ def _error_text(exc: Exception) -> str:
     return str(exc)[:500]
 
 
-async def _run_campaign(bot: Bot, admin_chat_id: int, campaign_id: int, delay: float) -> None:
+async def _run_campaign(
+    bot: Bot,
+    admin: AdminClient,
+    admin_chat_id: int,
+    admin_user_id: int,
+    campaign_id: int,
+    delay: float,
+    cancel_event: asyncio.Event,
+) -> None:
     sent = 0
     failed = 0
     stopped = False
+    client = admin.client
+    assert client is not None
 
     async with SessionLocal() as session:
         campaign = await repo.get_campaign(session, campaign_id)
@@ -148,21 +171,25 @@ async def _run_campaign(bot: Bot, admin_chat_id: int, campaign_id: int, delay: f
             await repo.update_campaign_progress(session, campaign_id, status="failed", finished=True)
         return
 
+    me = await admin.me_label() or "ваш аккаунт"
     progress = await bot.send_message(
         admin_chat_id,
-        f"📣 Рассылка #{campaign_id} запущена.\nОтправка идёт с вашего аккаунта, не от бота.\nПрогресс: 0/{total}",
+        f"📣 Рассылка #{campaign_id} запущена.\n"
+        f"Отправка идёт с аккаунта <b>{me}</b>, не от бота.\n"
+        f"Прогресс: 0/{total}",
+        parse_mode="HTML",
     )
 
     try:
         for index, recipient in enumerate(recipients, start=1):
-            if _cancel_event.is_set():
+            if cancel_event.is_set():
                 stopped = True
                 break
 
             label = recipient_label(recipient.username, recipient.phone, recipient.display_name)
             try:
-                entity = await _resolve_entity(recipient)
-                await _send_to_entity(entity, template)
+                entity = await _resolve_entity(client, recipient)
+                await _send_to_entity(client, entity, template)
                 sent += 1
                 async with SessionLocal() as session:
                     await repo.add_campaign_log(session, campaign_id, recipient.id, "sent")
@@ -175,8 +202,8 @@ async def _run_campaign(bot: Bot, admin_chat_id: int, campaign_id: int, delay: f
                 )
                 await asyncio.sleep(wait_for)
                 try:
-                    entity = await _resolve_entity(recipient)
-                    await _send_to_entity(entity, template)
+                    entity = await _resolve_entity(client, recipient)
+                    await _send_to_entity(client, entity, template)
                     sent += 1
                     async with SessionLocal() as session:
                         await repo.add_campaign_log(session, campaign_id, recipient.id, "sent")
@@ -202,7 +229,7 @@ async def _run_campaign(bot: Bot, admin_chat_id: int, campaign_id: int, delay: f
                 stopped = True
                 break
             except Exception as exc:
-                logger.exception("Send failed for %s", label)
+                logger.exception("Send failed for %s (admin %s)", label, admin_user_id)
                 failed += 1
                 async with SessionLocal() as session:
                     await repo.add_campaign_log(session, campaign_id, recipient.id, "failed", _error_text(exc))
@@ -219,13 +246,11 @@ async def _run_campaign(bot: Bot, admin_chat_id: int, campaign_id: int, delay: f
                 except Exception:
                     pass
 
-            if index < total and not _cancel_event.is_set():
+            if index < total and not cancel_event.is_set():
                 await asyncio.sleep(delay)
 
-        status = "cancelled" if stopped and _cancel_event.is_set() else "failed" if stopped else "completed"
-        if status == "failed":
-            pass
-        else:
+        status = "cancelled" if stopped and cancel_event.is_set() else "failed" if stopped else "completed"
+        if status != "failed":
             async with SessionLocal() as session:
                 await repo.update_campaign_progress(
                     session, campaign_id, sent=sent, failed=failed, status=status, finished=True
@@ -239,9 +264,12 @@ async def _run_campaign(bot: Bot, admin_chat_id: int, campaign_id: int, delay: f
             text = f"⛔ Рассылка #{campaign_id} прервана.\n✅ {sent}  ❌ {failed}  из {total}"
         await bot.send_message(admin_chat_id, text)
     except Exception:
-        logger.exception("Campaign crashed")
+        logger.exception("Campaign crashed (admin %s)", admin_user_id)
         async with SessionLocal() as session:
             await repo.update_campaign_progress(
                 session, campaign_id, sent=sent, failed=failed, status="failed", finished=True
             )
         await bot.send_message(admin_chat_id, f"⛔ Рассылка #{campaign_id} завершилась с ошибкой.")
+    finally:
+        _campaign_tasks.pop(admin_user_id, None)
+        _cancel_events.pop(admin_user_id, None)

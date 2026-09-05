@@ -12,7 +12,7 @@ from app.bot.handlers import setup_routers
 from app.bot.middlewares import AdminOnlyMiddleware
 from app.config import MEDIA_DIR, SESSIONS_DIR, get_settings
 from app.db.session import init_db
-from app.sender.client import admin_client
+from app.sender.client import admin_clients
 
 
 async def main() -> None:
@@ -26,9 +26,9 @@ async def main() -> None:
 
     await init_db()
     try:
-        await admin_client.start_if_authorized()
+        await admin_clients.start_all_authorized()
     except Exception:
-        logging.exception("Could not restore Telegram user session; log in via bot settings")
+        logging.exception("Could not restore Telegram user sessions; log in via bot settings")
 
     settings = get_settings()
     bot = Bot(token=settings.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -45,7 +45,7 @@ async def main() -> None:
     try:
         await dp.start_polling(bot)
     finally:
-        await admin_client.disconnect()
+        await admin_clients.disconnect_all()
         await bot.session.close()
 
 

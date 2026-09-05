@@ -19,24 +19,25 @@ from app.config import get_settings
 from app.db import repo
 from app.db.session import SessionLocal
 from app.sender.campaign import is_campaign_running, request_cancel
-from app.sender.client import admin_client
+from app.sender.client import admin_clients
 from app.utils import status_ru
 
 router = Router()
 
 
-async def render_settings(message: Message) -> None:
-    authorized = await admin_client.is_authorized()
-    me = await admin_client.me_label() if authorized else None
+async def render_settings(target: Message, admin_id: int) -> None:
+    admin = admin_clients.get(admin_id)
+    authorized = await admin.is_authorized()
+    me = await admin.me_label() if authorized else None
     async with SessionLocal() as session:
         delay = await repo.get_setting(session, "send_delay_seconds", str(get_settings().send_delay_seconds))
     account = escape(me) if me else "не авторизован"
-    await message.answer(
+    await target.answer(
         "⚙️ <b>Настройки</b>\n\n"
-        f"Аккаунт для рассылки: <b>{account}</b>\n"
+        f"Ваш аккаунт для рассылки: <b>{account}</b>\n"
         f"Пауза между сообщениями: <b>{escape(delay)}</b> сек.\n\n"
-        "Рассылка всегда идёт от этого аккаунта, бот только управляет процессом.",
-        reply_markup=settings_kb(authorized, is_campaign_running()),
+        "У каждого админа своя сессия. Рассылка идёт с вашего Telegram-аккаунта, бот только управляет процессом.",
+        reply_markup=settings_kb(authorized, is_campaign_running(admin_id)),
         parse_mode="HTML",
     )
 
@@ -46,20 +47,22 @@ async def cb_settings(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     await callback.answer()
     if callback.message:
-        await render_settings(callback.message)
+        await render_settings(callback.message, callback.from_user.id)
 
 
 @router.callback_query(F.data == "set:login")
 async def cb_login(callback: CallbackQuery, state: FSMContext) -> None:
-    if await admin_client.is_authorized():
+    admin = admin_clients.get(callback.from_user.id)
+    if await admin.is_authorized():
         await callback.answer("Уже авторизованы", show_alert=True)
         return
     await state.set_state(AuthFlow.phone)
     await callback.answer()
     if callback.message:
         await callback.message.answer(
-            "Введите номер телефона аккаунта, от которого пойдёт рассылка.\n"
-            "Формат: <code>+79001234567</code>",
+            "Введите номер телефона <b>вашего</b> аккаунта, от которого пойдёт рассылка.\n"
+            "Формат: <code>+79001234567</code>\n\n"
+            "Сессия сохранится только для вас — другие админы входят отдельно.",
             reply_markup=cancel_fsm_kb(),
             parse_mode="HTML",
         )
@@ -68,8 +71,9 @@ async def cb_login(callback: CallbackQuery, state: FSMContext) -> None:
 @router.message(AuthFlow.phone, F.text)
 async def msg_phone(message: Message, state: FSMContext) -> None:
     phone = (message.text or "").strip()
+    admin = admin_clients.get(message.from_user.id)
     try:
-        await admin_client.request_code(phone)
+        await admin.request_code(phone)
     except PhoneNumberInvalidError:
         await message.answer("Некорректный номер. Попробуйте ещё раз.")
         return
@@ -97,8 +101,9 @@ async def msg_phone(message: Message, state: FSMContext) -> None:
 @router.message(AuthFlow.code, F.text)
 async def msg_code(message: Message, state: FSMContext) -> None:
     code = (message.text or "").replace(" ", "")
+    admin = admin_clients.get(message.from_user.id)
     try:
-        result = await admin_client.sign_in_code(code)
+        result = await admin.sign_in_code(code)
     except PhoneCodeInvalidError:
         await message.answer("Неверный код. Попробуйте ещё раз или нажмите «Отмена».")
         return
@@ -116,31 +121,33 @@ async def msg_code(message: Message, state: FSMContext) -> None:
         await message.answer("Включена облачная пароль (2FA). Введите пароль:", reply_markup=cancel_fsm_kb())
         return
     await state.clear()
-    me = await admin_client.me_label() or "аккаунт"
+    me = await admin.me_label() or "аккаунт"
     await message.answer(f"Вход выполнен: {me}. Рассылка будет идти от этого аккаунта.")
 
 
 @router.message(AuthFlow.password, F.text)
 async def msg_password(message: Message, state: FSMContext) -> None:
+    admin = admin_clients.get(message.from_user.id)
     try:
-        await admin_client.sign_in_password(message.text or "")
+        await admin.sign_in_password(message.text or "")
     except Exception as exc:
         await message.answer(f"Неверный пароль или ошибка: {exc}")
         return
     await state.clear()
-    me = await admin_client.me_label() or "аккаунт"
+    me = await admin.me_label() or "аккаунт"
     await message.answer(f"Вход выполнен: {me}.")
 
 
 @router.callback_query(F.data == "set:logout")
 async def cb_logout(callback: CallbackQuery) -> None:
-    if is_campaign_running():
+    admin_id = callback.from_user.id
+    if is_campaign_running(admin_id):
         await callback.answer("Сначала остановите рассылку", show_alert=True)
         return
-    await admin_client.logout()
-    await callback.answer("Сессия удалена")
+    await admin_clients.get(admin_id).logout()
+    await callback.answer("Ваша сессия удалена")
     if callback.message:
-        await render_settings(callback.message)
+        await render_settings(callback.message, admin_id)
 
 
 @router.callback_query(F.data == "set:delay")
@@ -169,17 +176,17 @@ async def msg_delay(message: Message, state: FSMContext) -> None:
         await repo.set_setting(session, "send_delay_seconds", str(value))
     await state.clear()
     await message.answer(f"Пауза установлена: {value} сек.")
-    await render_settings(message)
+    await render_settings(message, message.from_user.id)
 
 
 @router.callback_query(F.data == "set:stop")
 async def cb_stop(callback: CallbackQuery) -> None:
-    if request_cancel():
+    if request_cancel(callback.from_user.id):
         await callback.answer("Остановка после текущего сообщения")
         if callback.message:
-            await callback.message.answer("Рассылка будет остановлена.")
+            await callback.message.answer("Ваша рассылка будет остановлена.")
         return
-    await callback.answer("Сейчас ничего не отправляется", show_alert=True)
+    await callback.answer("Сейчас у вас ничего не отправляется", show_alert=True)
 
 
 @router.callback_query(F.data == "menu:history")

@@ -8,7 +8,7 @@ from app.bot.keyboards import confirm_broadcast_kb, pick_groups_kb, pick_templat
 from app.db import repo
 from app.db.session import SessionLocal
 from app.sender.campaign import is_campaign_running, start_campaign
-from app.sender.client import admin_client
+from app.sender.client import admin_clients
 
 router = Router()
 
@@ -19,13 +19,17 @@ async def cb_broadcast(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
     if not callback.message:
         return
-    if not await admin_client.is_authorized():
+    admin = admin_clients.get(callback.from_user.id)
+    if not await admin.is_authorized():
         await callback.message.answer(
-            "Сначала войдите в аккаунт админа в «Настройках». Рассылка идёт от вашего аккаунта, не от бота."
+            "Сначала войдите в свой аккаунт в «Настройках». "
+            "Рассылка идёт от вашего Telegram, не от бота. У каждого админа своя сессия."
         )
         return
-    if is_campaign_running():
-        await callback.message.answer("Уже идёт другая рассылка. Дождитесь окончания или остановите её в настройках.")
+    if is_campaign_running(callback.from_user.id):
+        await callback.message.answer(
+            "У вас уже идёт рассылка. Дождитесь окончания или остановите её в настройках."
+        )
         return
     async with SessionLocal() as session:
         groups = await repo.list_groups(session)
@@ -79,7 +83,8 @@ async def cb_pick_template(callback: CallbackQuery) -> None:
         template = await repo.get_template(session, template_id)
         _, total = await repo.list_recipients(session, group_id, limit=1)
         delay = await repo.get_setting(session, "send_delay_seconds", "4")
-    me = await admin_client.me_label() or "ваш аккаунт"
+    admin = admin_clients.get(callback.from_user.id)
+    me = await admin.me_label() or "ваш аккаунт"
     group_name = escape(group.name) if group else "?"
     tpl_name = escape(template.title) if template else "?"
     await callback.message.answer(
@@ -103,12 +108,18 @@ async def cb_go(callback: CallbackQuery) -> None:
     if not callback.message:
         await callback.answer()
         return
-    result = await start_campaign(callback.bot, callback.message.chat.id, group_id, template_id)
+    result = await start_campaign(
+        callback.bot,
+        callback.from_user.id,
+        callback.message.chat.id,
+        group_id,
+        template_id,
+    )
     if result == "already_running":
-        await callback.answer("Рассылка уже идёт", show_alert=True)
+        await callback.answer("У вас уже идёт рассылка", show_alert=True)
         return
     if result == "not_authorized":
-        await callback.answer("Нет сессии админа", show_alert=True)
+        await callback.answer("Нет вашей сессии — войдите в настройках", show_alert=True)
         return
     if result == "empty":
         await callback.answer("Группа пуста", show_alert=True)
@@ -117,4 +128,4 @@ async def cb_go(callback: CallbackQuery) -> None:
         await callback.answer("Группа или шаблон не найдены", show_alert=True)
         return
     await callback.answer("Запущено")
-    await callback.message.answer("Рассылка запущена. Прогресс придёт отдельными сообщениями.")
+    await callback.message.answer("Рассылка запущена с вашего аккаунта. Прогресс придёт отдельными сообщениями.")
